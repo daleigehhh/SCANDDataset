@@ -1,0 +1,19 @@
+odom: /jackal_velocity_controller/odom
+scan: /velodyne_2dscan_high_beams
+
+#point_cloud: /velodyne_points
+
+device: cpu
+
+mapper:
+  p: 0.5
+  X_lim:
+    - 0
+    - 6.4
+  Y_lim:
+    - -3.2
+    - 3.2
+  resolution: 0.1
+  size: None
+  # Keep this same as above
+  device: cpu
