@@ -12,6 +12,7 @@ from concurrent.futures import ProcessPoolExecutor
 import time
 from typing import Tuple, Dict, Any, Optional
 from scripts.local_occ_grid_map import LocalMap
+from scripts.hooks import SaveBackViewHook, SaveFrontViewHook, SavePoseControlHook
 
 
 class ROSBagExtractor(object):
@@ -51,7 +52,7 @@ class ROSBagExtractor(object):
         count = sum(count)
         self.summary(start_time, end_time, count)
 
-    def extract(self, bag_path) -> Tuple[Dict[str, np.array], Optional[int]]:
+    def extract(self, bag_path: str) -> Tuple[Dict[str, np.array], Optional[int]]:
         data_no_sync = self._extract_one_bag_no_syn(bag_path)
         if self.synchronize is False:
             return data_no_sync, None
@@ -59,7 +60,9 @@ class ROSBagExtractor(object):
             data_synced, cnt = self._synchornize(data_no_sync)
             return data_synced, cnt
 
-    def _synchornize(self, data: Dict[str, np.array]) -> Tuple[Dict[str, np.array], int]:
+    @SavePoseControlHook('viz/statistics')
+    def _synchornize(self,
+                     data: Dict[str, np.array]) -> Tuple[Dict[str, np.array], int]:
         bag_name = data['bag_name']
         timestamp_odom = data['timestamp_odom'][:, None]
         timestamp_scan = data['timestamp_scan'][None, :]
@@ -73,9 +76,9 @@ class ROSBagExtractor(object):
         count = self.seq_len
         mapper_kwargs = self.config['mapper']
         mapper_kwargs['size'] = [self.batch_size, self.seq_len]
-        binary_maps = self._get_map(scan, mapper_kwargs)
+        binary_maps, _ = self._get_map(bag_name, scan, mapper_kwargs)
         if self.enable_reverse_aug:
-            reversed_maps = self._reverse_augmentation(scan, mapper_kwargs)
+            reversed_maps, _ = self._reverse_augmentation(bag_name, scan, mapper_kwargs)
             binary_maps = np.concatenate([binary_maps, reversed_maps], axis=0)
             velocity = np.concatenate([velocity, np.flip(velocity*-1, 0)], axis=0)
             pose = np.concatenate([pose, np.flip(pose, 0)], axis=0)
@@ -84,7 +87,7 @@ class ROSBagExtractor(object):
             'bag_name': bag_name,
             'velocity': velocity,
             'pose': pose,
-            'maps': binary_maps
+            'maps': binary_maps,
         }
         print(f'{bag_name}: [synced sensor data] {len(velocity)} pose-vel pairs,'
               f' {count} frames')
@@ -93,10 +96,11 @@ class ROSBagExtractor(object):
     def _extract_one_bag_no_syn(self, bag_path: str) -> Dict[str, np.array]:
         velocity_data, pose_data, scan_data = [], [], []
         timestamp_odom, timestamp_scan = [], []
+        bag_name = bag_path.split('/')[-1]
         with rosbag.Bag(bag_path, 'r') as data_bag:
             for topic, msg, t in data_bag.read_messages(topics=self.topics):
                 if 'Odometry' in msg._type:
-                    velocity, pose = self._extract_pose_vel(msg)
+                    velocity, pose, _ = self._extract_pose_vel(bag_name, msg)
                     velocity_data.append(velocity)
                     pose_data.append(pose)
                     timestamp_odom.append(t.to_nsec() / 1e8) # For numerical stability
@@ -124,7 +128,9 @@ class ROSBagExtractor(object):
               f' {len(scan_data)} laser_scan frames')
         return data
 
-    def _extract_pose_vel(self, msg: Odometry) -> Tuple[np.array, ...]:
+    def _extract_pose_vel(self,
+                          bag_name: str,
+                          msg: Odometry) -> Tuple[np.array, ...]:
         '''
             Extract pose and velocity from a single Odometry message
         '''
@@ -140,7 +146,11 @@ class ROSBagExtractor(object):
         # Validation
         pose[np.bitwise_or(np.isinf(pose), np.isnan(pose))] = 0.
         velocity[np.bitwise_or(np.isinf(velocity), np.isnan(velocity))] = 0.
-        return velocity, pose
+
+        # reverse augment
+        # pose_reverse = np.flip(pose, 0)
+        # velocity_reverse = np.flip(-velocity, 0)
+        return velocity, pose, bag_name
 
     def _extract_scan(self, msg: LaserScan) -> np.array:
         '''
@@ -154,7 +164,11 @@ class ROSBagExtractor(object):
 
         return scan
 
-    def _get_map(self, scan: np.array, mapper_kwargs: Dict[str, Any]) -> np.array:
+    @SaveFrontViewHook('viz/video/front')
+    def _get_map(self,
+                 bag_name: str,
+                 scan: np.array,
+                 mapper_kwargs: Dict[str, Any]) -> np.array:
         scan = torch.from_numpy(scan).unsqueeze(0)
         mapper = LocalMap(**mapper_kwargs)
         x_odom = torch.zeros(self.batch_size, self.seq_len).to(self.device)
@@ -163,9 +177,13 @@ class ROSBagExtractor(object):
         angles = torch.linspace(-np.pi, np.pi, scan.shape[-1]).to(self.device)
         distances_x, distances_y = mapper.lidar_scan_xy(scan, angles, x_odom, y_odom, theta_odom)
         binary_maps = mapper.discretize(distances_x, distances_y).cpu().numpy().squeeze()
-        return binary_maps
+        return binary_maps, bag_name
 
-    def _reverse_augmentation(self, scan: np.array, mapper_kwargs: Dict[str, Any]) -> np.array:
+    @SaveBackViewHook('viz/video/back')
+    def _reverse_augmentation(self,
+                              bag_name: str,
+                              scan: np.array,
+                              mapper_kwargs: Dict[str, Any]) -> np.array:
         '''
             NOTE: MUST BE CALLED AFTER _get_map
         '''
@@ -173,9 +191,10 @@ class ROSBagExtractor(object):
         X_lim[0], X_lim[1] = X_lim[0] * -1, X_lim[1] * -1
         X_lim = list(reversed(X_lim))
         mapper_kwargs['X_lim'] = X_lim
-        binary_maps = self._get_map(scan, mapper_kwargs)
+        get_map = self._get_map.__wrapped__
+        binary_maps, bag_name = get_map(self, bag_name, scan, mapper_kwargs)
         binary_maps_flipped = np.flip(binary_maps, 0)
-        return binary_maps_flipped
+        return binary_maps_flipped, bag_name
 
     def summary(self, start_time: float, end_time: float, count: int) -> None:
         print(f'All bags processed, {end_time - start_time} seconds elapsed, '
