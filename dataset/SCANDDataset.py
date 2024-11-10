@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torchvision import transforms
@@ -92,6 +93,7 @@ class SCADOGMSubDataset(Dataset):
                  hist_seq_len: int,
                  pred_seq_len: int,
                  data: Dict[str, np.array],
+                 backward_aug = False,
                  augmentation: Optional[Callable[..., Tuple[torch.tensor, ...]]] = None
                  ) -> None:
         self.hist_seq_len = hist_seq_len
@@ -99,20 +101,27 @@ class SCADOGMSubDataset(Dataset):
         self.seq_len = hist_seq_len + pred_seq_len
         self.data = data
         self.bag_name = data['bag_name']
-        self.length = len(data['maps']) - (self.hist_seq_len + self.pred_seq_len) + 1
+        if backward_aug:
+            maps_numpy = np.concatenate([data['maps'], data['reversed_maps']], 0)
+            velocity_numpy = np.concatenate([data['velocity'], data['reversed_velocity']], 0)
+            self.maps = torch.from_numpy(maps_numpy)
+            self.velocity = torch.from_numpy(velocity_numpy)
+            self.length = len(self.maps) - self.seq_len + 1
+        else:
+            self.maps = torch.from_numpy(data['maps'])
+            self.velocity = torch.from_numpy(data['velocity'])
+            self.length = len(data['maps']) - self.seq_len + 1
         if not self._check_consistency():
-            raise RuntimeError(f"Inconsistent dataset when checking {self.bag_name}")
+            raise RuntimeError(f"Inconsistent dataset when checking data from {self.bag_name}")
         self.augmentation = augmentation
 
     def __len__(self) -> int:
         return self.length
 
     def __getitem__(self, idx) -> Dict[str, torch.tensor]:
-        maps = self.data['maps'][idx:idx+self.seq_len]
-        velocity = self.data['velocity'][idx:idx+self.seq_len]
         # For now, [b, t, c, h, w] or [N, L, C, H, W]
-        maps = torch.from_numpy(maps).unsqueeze(1)
-        velocity = torch.from_numpy(velocity)
+        maps = self.maps[idx: idx+self.seq_len].unsqueeze(1)
+        velocity = self.velocity[idx: idx+self.seq_len]
         maps, velocity = self.augmentation(maps, velocity)
         out = {
             'maps': maps,
@@ -130,20 +139,41 @@ class SCANDOGMDataset(ConcatDataset):
     def __init__(self,
                  hist_seq_len: int,
                  pred_seq_len: int,
-                 blob_path: str,
+                 blob_path_list: List[str],
+                 backward_aug = False,
                  augmentation: Optional[Callable[..., Tuple[torch.tensor, ...]]] = None) -> None:
-        with open(blob_path, 'rb') as f:
-            data = pickle.load(f)
-        sub_datasets = [SCADOGMSubDataset(hist_seq_len, pred_seq_len, data_bag, augmentation)
-                   for data_bag in data]
+        data_list = []
+        for blob_path in blob_path_list:
+            with open(blob_path, 'rb') as f:
+                try:
+                    data_list.extend(pickle.load(f))
+                except Exception as e:
+                    print(f"load blob file {blob_path.split('/')[-1]} failed. "
+                          f"as {e}")
+        sub_datasets = [SCADOGMSubDataset(hist_seq_len, pred_seq_len, data_bag, backward_aug, augmentation)
+                   for data_bag in data_list]
         super().__init__(sub_datasets)
-
 
 if __name__ == "__main__":
     d_aug = DataAugmentation('../configs/data_aug.yaml')
 
+    blob_path_list = os.listdir('../blobs')
+    blob_path_list = [os.path.join('../blobs', i) for i in blob_path_list]
+
+    import time
+
+    start_time = time.time()
     scand = SCANDOGMDataset(hist_seq_len=10,
                             pred_seq_len=30,
-                            blob_path='../blobs/data.pkl',
+                            blob_path_list=blob_path_list,
+                            backward_aug=True,
                             augmentation=d_aug)
-    print(f'length of the SCAND datasets')
+    dloader = DataLoader(scand, batch_size=32, shuffle=True, num_workers=8)
+
+    for i in dloader:
+        # print(i.keys())
+        # print(i['maps'].shape)
+        pass
+    end_time = time.time()
+
+    print(f'length of the SCAND datasets {len(scand)}, {end_time - start_time} sec elapsed')

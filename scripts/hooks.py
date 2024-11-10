@@ -31,6 +31,7 @@ class SaveBackViewHook(object):
             for i in range(len(binary_map)):
                 frame = binary_map[i].astype(np.uint8) * 255
                 writer.write(frame)
+            writer.release()
             return binary_map, bag_name
         return wrapper
 
@@ -60,6 +61,7 @@ class SaveFrontViewHook(object):
             for i in range(len(binary_map_flipped)):
                 frame = binary_map[i].astype(np.uint8) * 255
                 writer.write(frame)
+            writer.release()
             return binary_map, bag_name
         return wrapper
 

@@ -7,7 +7,7 @@ import torch
 from omegaconf import OmegaConf
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan, PointCloud2
-import ros_numpy
+# import ros_numpy
 from tf.transformations import euler_from_quaternion
 from concurrent.futures import ProcessPoolExecutor
 import time
@@ -21,13 +21,16 @@ class ROSBagExtractor(object):
                  base_path: str,
                  target: str,
                  config: str,
+                 dump_name: str,
                  synchronize: bool = True,
                  enable_reverse_aug: bool = True):
         assert base_path and target, "Invalid Path"
         self.base_path = os.path.abspath(base_path)
         self.bag_list = [os.path.join(self.base_path, i) for i in
                          glob.glob(os.path.join(self.base_path,'*.bag'))]
+        assert len(self.bag_list) != 0
         self.target = target
+        self.dump_name = dump_name
         self.enable_reverse_aug = enable_reverse_aug
         os.makedirs(self.target, exist_ok=True)
 
@@ -46,10 +49,9 @@ class ROSBagExtractor(object):
 
     def extract_all(self) -> None:
         start_time = time.time()
-        with ProcessPoolExecutor(max_workers=8) as executor:
-            ret = executor.map(self.extract, self.bag_list)
+        with ProcessPoolExecutor(max_workers=16) as executor:
             blobs, count = zip(*executor.map(self.extract, self.bag_list))
-        with open(os.path.join(self.target, 'data.pkl'), 'wb') as f:
+        with open(os.path.join(self.target, self.dump_name+'.pkl'), 'wb') as f:
             pickle.dump(blobs, f)
         end_time = time.time()
         count = sum(count)
@@ -82,16 +84,24 @@ class ROSBagExtractor(object):
         binary_maps, _ = self._get_map(bag_name, scan, mapper_kwargs)
         if self.enable_reverse_aug:
             reversed_maps, _ = self._reverse_augmentation(bag_name, scan, mapper_kwargs)
-            binary_maps = np.concatenate([binary_maps, reversed_maps], axis=0)
-            velocity = np.concatenate([velocity, np.flip(velocity*-1, 0)], axis=0)
-            pose = np.concatenate([pose, np.flip(pose, 0)], axis=0)
-            count = len(binary_maps)
-        data_synced = {
-            'bag_name': bag_name,
-            'velocity': velocity,
-            'pose': pose,
-            'maps': binary_maps,
-        }
+            count = len(binary_maps) * 2
+            data_synced = {
+                'bag_name': bag_name,
+                'velocity': velocity,
+                'pose': pose,
+                'maps': binary_maps,
+                'reversed_velocity': np.flip(-velocity, 0),
+                'reversed_pose': np.flip(pose, 0),
+                'reversed_maps': reversed_maps
+            }
+
+        else:
+            data_synced = {
+                'bag_name': bag_name,
+                'velocity': velocity,
+                'pose': pose,
+                'maps': binary_maps,
+            }
         print(f'{bag_name}: [synced sensor data] {len(velocity)} pose-vel pairs,'
               f' {count} frames')
         return data_synced, count
@@ -176,8 +186,8 @@ class ROSBagExtractor(object):
             Extract pointcloud2 as scan
         '''
         knee_range = sorted(self.config['point_cloud']['z_range'])
-        pc_np = ros_numpy.point_cloud2.pointcloud2_to_xyz_array(msg)
-        print(pc_np.shape)
+        # pc_np = ros_numpy.point_cloud2.pointcloud2_to_xyz_array(msg)
+        # print(pc_np.shape)
         pass
 
     @SaveFrontViewHook('viz/video/front')
