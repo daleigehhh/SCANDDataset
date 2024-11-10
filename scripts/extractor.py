@@ -6,7 +6,8 @@ import os
 import torch
 from omegaconf import OmegaConf
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, PointCloud2
+import ros_numpy
 from tf.transformations import euler_from_quaternion
 from concurrent.futures import ProcessPoolExecutor
 import time
@@ -34,6 +35,7 @@ class ROSBagExtractor(object):
         self.config = OmegaConf.load(config)
         odom_topic = self.config['odom']
         scan_topic = self.config['scan']
+        # pc_topic = self.config['point_cloud']['topic']
         self.topics = [odom_topic, scan_topic]
         self.device = self.config['device']
         # Flag for extract synchronized messages
@@ -45,6 +47,7 @@ class ROSBagExtractor(object):
     def extract_all(self) -> None:
         start_time = time.time()
         with ProcessPoolExecutor(max_workers=8) as executor:
+            ret = executor.map(self.extract, self.bag_list)
             blobs, count = zip(*executor.map(self.extract, self.bag_list))
         with open(os.path.join(self.target, 'data.pkl'), 'wb') as f:
             pickle.dump(blobs, f)
@@ -98,7 +101,7 @@ class ROSBagExtractor(object):
         timestamp_odom, timestamp_scan = [], []
         bag_name = bag_path.split('/')[-1]
         with rosbag.Bag(bag_path, 'r') as data_bag:
-            for topic, msg, t in data_bag.read_messages(topics=self.topics):
+            for topic, msg, t in data_bag.read_messages(topics=[topic for topic in self.topics if topic]):
                 if 'Odometry' in msg._type:
                     velocity, pose, _ = self._extract_pose_vel(bag_name, msg)
                     velocity_data.append(velocity)
@@ -106,6 +109,10 @@ class ROSBagExtractor(object):
                     timestamp_odom.append(t.to_nsec() / 1e8) # For numerical stability
                 elif 'LaserScan' in msg._type:
                     scan = self._extract_scan(msg)
+                    scan_data.append(scan)
+                    timestamp_scan.append(t.to_nsec() / 1e8)
+                elif 'PointCloud2' in msg._type:
+                    scan = self._extract_pc2(msg)
                     scan_data.append(scan)
                     timestamp_scan.append(t.to_nsec() / 1e8)
                 else:
@@ -164,6 +171,15 @@ class ROSBagExtractor(object):
 
         return scan
 
+    def _extract_pc2(self, msg: PointCloud2):
+        '''
+            Extract pointcloud2 as scan
+        '''
+        knee_range = sorted(self.config['point_cloud']['z_range'])
+        pc_np = ros_numpy.point_cloud2.pointcloud2_to_xyz_array(msg)
+        print(pc_np.shape)
+        pass
+
     @SaveFrontViewHook('viz/video/front')
     def _get_map(self,
                  bag_name: str,
@@ -202,5 +218,5 @@ class ROSBagExtractor(object):
 
 
 if __name__ == "__main__":
-    extractor = ROSBagExtractor('../bags', 'blobs', '../configs/Jackal.yaml')
+    extractor = ROSBagExtractor('../bags/Spot', 'blobs', '../configs/Spot.yaml')
     extractor.extract_all()

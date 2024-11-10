@@ -4,9 +4,9 @@ from torch.utils.data import DataLoader
 
 
 if __name__ == "__main__":
-    extractor = ROSBagExtractor(base_path='bags',
+    extractor = ROSBagExtractor(base_path='bags/Spot',
                                 target='blobs',
-                                config='configs/Jackal.yaml',
+                                config='configs/Spot.yaml',
                                 )
     extractor.extract_all()
 

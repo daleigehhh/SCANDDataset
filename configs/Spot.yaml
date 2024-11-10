@@ -1,8 +1,10 @@
-odom: /jackal_velocity_controller/odom
-scan: /velodyne_2dscan_high_beams
+odom: /odom
+scan: /scan
 point_cloud: None
-#  topic: None
-#  z_range: None # for consistency
+#  topic: /velodyne_points
+#  z_range:
+#    - 0.3
+#    - 0.6
 
 device: cpu
 
